@@ -55,7 +55,7 @@ class DBManager {
         
         // Try to get email for metadata
         // 1. antigravityAuthStatus
-        if let authStatus = data["antigravityAuthStatus"] {
+        if let _ = data["antigravityAuthStatus"] {
             // Simple string search for email to avoid full JSON parsing if possible, or parse it properly
             // Python version does simple check. We'll parse in AccountManager.
         }

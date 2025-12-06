@@ -9,7 +9,7 @@ struct AntigravityMenuBarApp: App {
     var body: some Scene {
         MenuBarExtra("Antigravity", systemImage: "person.2.circle") {
             // Header
-            Text("Antigravity Manager")
+            Text("Antigravity Switcher")
                 .font(.headline)
                 .padding(.horizontal)
             
@@ -21,8 +21,16 @@ struct AntigravityMenuBarApp: App {
                     .foregroundColor(.gray)
             } else {
                 ForEach(accountManager.accounts) { account in
-                    Button {
-                        switchAccount(account)
+                    Menu {
+                        Button("Switch to this account") {
+                            switchAccount(account)
+                        }
+                        
+                        Divider()
+                        
+                        Button("Remove Account") {
+                            removeAccount(account)
+                        }
                     } label: {
                         HStack {
                             if account.email == "Unknown" {
@@ -71,7 +79,7 @@ struct AntigravityMenuBarApp: App {
             do {
                 try await accountManager.switchAccount(id: account.id)
             } catch let error as AppError {
-                await showError(error)
+                showError(error)
             } catch {
                 print("Unexpected error: \(error)")
             }
@@ -83,10 +91,18 @@ struct AntigravityMenuBarApp: App {
             do {
                 _ = try await accountManager.addCurrentAccount()
             } catch let error as AppError {
-                await showError(error)
+                showError(error)
             } catch {
                 print("Unexpected error: \(error)")
             }
+        }
+    }
+    
+    private func removeAccount(_ account: Account) {
+        do {
+            try accountManager.removeAccount(id: account.id)
+        } catch {
+            print("Error removing account: \(error)")
         }
     }
     

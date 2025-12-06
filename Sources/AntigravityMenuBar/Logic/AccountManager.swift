@@ -99,8 +99,10 @@ class AccountManager: ObservableObject {
             last_used: Date().ISO8601Format()
         )
         
+        let finalAccountId = accountId
+        
         await MainActor.run {
-            if let idx = accounts.firstIndex(where: { $0.id == accountId }) {
+            if let idx = accounts.firstIndex(where: { $0.id == finalAccountId }) {
                 accounts[idx] = newAccount
             } else {
                 accounts.append(newAccount)
@@ -119,7 +121,7 @@ class AccountManager: ObservableObject {
         print("🔄 Switching to \(account.name)...")
         
         // 1. Close App
-        _ = ProcessManager.shared.closeApp()
+        // _ = ProcessManager.shared.closeApp()
         
         // 2. Read Backup
         let backupUrl = URL(fileURLWithPath: account.backup_file)
@@ -142,10 +144,30 @@ class AccountManager: ObservableObject {
             }
             
             // 4. Start App
-            ProcessManager.shared.startApp()
+            // ProcessManager.shared.startApp()
             
         case .failure(let error):
             throw error
         }
+    }
+    
+    func removeAccount(id: String) throws {
+        guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+            return // Or throw error
+        }
+        
+        let account = accounts[index]
+        
+        // 1. Remove Backup File
+        let backupUrl = URL(fileURLWithPath: account.backup_file)
+        if FileManager.default.fileExists(atPath: backupUrl.path) {
+            try FileManager.default.removeItem(at: backupUrl)
+        }
+        
+        // 2. Remove from List
+        accounts.remove(at: index)
+        saveAccounts()
+        
+        print("🗑️ Removed account: \(account.name)")
     }
 }
