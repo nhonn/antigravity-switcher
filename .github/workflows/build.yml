@@ -11,19 +11,45 @@ jobs:
     name: Build and Package
     runs-on: macos-14
     
+    permissions:
+      contents: write
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-      
+      with:
+        fetch-depth: '0'
+
     - name: Make build script executable
       run: chmod +x build.sh
       
     - name: Build App
       run: ./build.sh
+
+    - name: Zip Application
+      run: |
+        cd build
+        zip -r AntigravityMenuBar.zip AntigravityMenuBar.app
+
+    - name: Bump version and push tag
+      id: tag_version
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      uses: mathieudutour/github-tag-action@v6.2
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create Release
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.tag_version.outputs.new_tag }}
+        name: Release ${{ steps.tag_version.outputs.new_tag }}
+        body: ${{ steps.tag_version.outputs.changelog }}
+        files: build/AntigravityMenuBar.zip
       
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: AntigravityMenuBar
-        path: build/AntigravityMenuBar.app
+        path: build/AntigravityMenuBar.zip
         if-no-files-found: error
