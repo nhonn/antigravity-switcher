@@ -60,13 +60,13 @@ class ProcessManager {
         print("🚀 Starting Antigravity...")
         
         // Use URI scheme
-        if let url = URL(string: "antigravity://oauth-success") {
+        if let url = URL(string: AppConfiguration.shared.antigravityLinkScheme) {
             NSWorkspace.shared.open(url)
         } else {
             // Fallback to open app by name
             let config = NSWorkspace.OpenConfiguration()
-            if let appUrl = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.ctrler.antigravity") ?? 
-                           NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.antigravity.app") { // Guess bundle ID
+            if let appUrl = NSWorkspace.shared.urlForApplication(withBundleIdentifier: AppConfiguration.shared.antigravityBundleIds[0]) ?? 
+                           NSWorkspace.shared.urlForApplication(withBundleIdentifier: AppConfiguration.shared.antigravityBundleIds[1]) { // Guess bundle ID
                 NSWorkspace.shared.openApplication(at: appUrl, configuration: config, completionHandler: nil)
             } else {
                  // Fallback shell command

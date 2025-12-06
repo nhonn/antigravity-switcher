@@ -14,6 +14,10 @@ let package = Package(
         .executableTarget(
             name: "AntigravityMenuBar",
             dependencies: []
+        ),
+        .testTarget(
+            name: "AntigravityMenuBarTests",
+            dependencies: ["AntigravityMenuBar"]
         )
     ]
 )

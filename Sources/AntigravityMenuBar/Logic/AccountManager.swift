@@ -20,7 +20,7 @@ class AccountManager: ObservableObject {
     
     private var appDataDir: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let dir = home.appendingPathComponent(".antigravity-agent")
+        let dir = home.appendingPathComponent(AppConfiguration.shared.appDataDirectoryName)
         if !FileManager.default.fileExists(atPath: dir.path) {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
@@ -28,7 +28,7 @@ class AccountManager: ObservableObject {
     }
     
     private var accountsFile: URL {
-        return appDataDir.appendingPathComponent("antigravity_accounts.json")
+        return appDataDir.appendingPathComponent(AppConfiguration.shared.accountsFileName)
     }
     
     func loadAccounts() {
@@ -55,14 +55,14 @@ class AccountManager: ObservableObject {
         }
     }
     
-    func addCurrentAccount() -> Bool {
+    func addCurrentAccount() async throws -> Account {
         // 1. Get Info
         let email = DBManager.shared.getCurrentAccountEmail() ?? "Unknown"
         let name = email != "Unknown" ? email.components(separatedBy: "@").first ?? "Account" : "Account_\(Int(Date().timeIntervalSince1970))"
         
         // 2. Check existing
         var accountId = UUID().uuidString
-        var backupPath = appDataDir.appendingPathComponent("backups/\(accountId).json")
+        var backupPath = appDataDir.appendingPathComponent("\(AppConfiguration.shared.backupsDirectoryName)/\(accountId).json")
         
         if let existing = accounts.first(where: { $0.email == email }) {
             print("Update existing backup for \(email)")
@@ -70,26 +70,24 @@ class AccountManager: ObservableObject {
             backupPath = URL(fileURLWithPath: existing.backup_file)
         } else {
             // Create backup dir
-            let backupDir = appDataDir.appendingPathComponent("backups")
-            try? FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+            let backupDir = appDataDir.appendingPathComponent(AppConfiguration.shared.backupsDirectoryName)
+            if !FileManager.default.fileExists(atPath: backupDir.path) {
+                try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+            }
         }
         
         // 3. Backup DB
-        guard let data = DBManager.shared.backupData() else {
-            return false
+        let data: [String: String]
+        switch DBManager.shared.backupData() {
+        case .success(let d):
+            data = d
+        case .failure(let error):
+            throw error
         }
         
         // Write JSON
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted]) else {
-            return false
-        }
-        
-        do {
-            try jsonData.write(to: backupPath)
-        } catch {
-            print("❌ Failed to write backup file: \(error)")
-            return false
-        }
+        let jsonData = try JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted])
+        try jsonData.write(to: backupPath)
         
         // 4. Update List
         let newAccount = Account(
@@ -101,19 +99,22 @@ class AccountManager: ObservableObject {
             last_used: Date().ISO8601Format()
         )
         
-        if let idx = accounts.firstIndex(where: { $0.id == accountId }) {
-            accounts[idx] = newAccount
-        } else {
-            accounts.append(newAccount)
+        await MainActor.run {
+            if let idx = accounts.firstIndex(where: { $0.id == accountId }) {
+                accounts[idx] = newAccount
+            } else {
+                accounts.append(newAccount)
+            }
+            saveAccounts()
         }
         
-        saveAccounts()
-        loadAccounts() // Refresh sort
-        return true
+        return newAccount
     }
     
-    func switchAccount(id: String) -> Bool {
-        guard let account = accounts.first(where: { $0.id == id }) else { return false }
+    func switchAccount(id: String) async throws {
+        guard let account = accounts.first(where: { $0.id == id }) else {
+            throw AppError.accountNotFound
+        }
         
         print("🔄 Switching to \(account.name)...")
         
@@ -122,26 +123,29 @@ class AccountManager: ObservableObject {
         
         // 2. Read Backup
         let backupUrl = URL(fileURLWithPath: account.backup_file)
-        guard let data = try? Data(contentsOf: backupUrl),
-              let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: String] else {
-            print("❌ Failed to read backup file")
-            return false
+        let data = try Data(contentsOf: backupUrl)
+        
+        guard let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: String] else {
+            throw AppError.failedToReadBackup(path: backupUrl.path)
         }
         
         // 3. Restore DB
-        if DBManager.shared.restoreData(json) {
+        switch DBManager.shared.restoreData(json) {
+        case .success:
             // Update Last Used
-            if let idx = accounts.firstIndex(where: { $0.id == id }) {
-                accounts[idx].last_used = Date().ISO8601Format()
-                saveAccounts()
-                loadAccounts()
+            await MainActor.run {
+                if let idx = accounts.firstIndex(where: { $0.id == id }) {
+                    accounts[idx].last_used = Date().ISO8601Format()
+                    saveAccounts()
+                    loadAccounts() // Refresh sort
+                }
             }
             
             // 4. Start App
             ProcessManager.shared.startApp()
-            return true
+            
+        case .failure(let error):
+            throw error
         }
-        
-        return false
     }
 }

@@ -3,6 +3,8 @@ import SwiftUI
 @main
 struct AntigravityMenuBarApp: App {
     @StateObject private var accountManager = AccountManager.shared
+    @State private var lastError: AppError?
+    @State private var showErrorAlert = false
     
     var body: some Scene {
         MenuBarExtra("Antigravity", systemImage: "person.2.circle") {
@@ -57,27 +59,40 @@ struct AntigravityMenuBarApp: App {
             .keyboardShortcut("q")
         }
         .menuBarExtraStyle(.menu) // Dropdown menu style
+        // Note: Alerts in MenuBarExtra are tricky. Standard SwiftUI .alert might not show up over a menu bar app easily.
+        // We often need a workaround or a window. For simplicity in this native macOS app improvement, we can try using a basic NSAlert from logic or use a window if needed.
+        // However, since SwiftUI's MenuBarExtra in .menu style actually renders NSMenuItems, standard SwiftUI alerts won't work inside the menu construction block directly in the same way.
+        // But for the sake of improved architecture, we will handle the error in the Task. 
+        // Showing a real UI alert from a menu bar app often requires bringing the app to front or using NSAlert.
     }
     
     private func switchAccount(_ account: Account) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let success = accountManager.switchAccount(id: account.id)
-            DispatchQueue.main.async {
-                if !success {
-                    print("Failed to switch")
-                }
+        Task {
+            do {
+                try await accountManager.switchAccount(id: account.id)
+            } catch let error as AppError {
+                await showError(error)
+            } catch {
+                print("Unexpected error: \(error)")
             }
         }
     }
     
     private func backupCurrent() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let success = accountManager.addCurrentAccount()
-            DispatchQueue.main.async {
-                if !success {
-                    print("Failed to backup")
-                }
+        Task {
+            do {
+                _ = try await accountManager.addCurrentAccount()
+            } catch let error as AppError {
+                await showError(error)
+            } catch {
+                print("Unexpected error: \(error)")
             }
         }
+    }
+    
+    @MainActor
+    private func showError(_ error: AppError) {
+        let alert = NSAlert(error: error)
+        alert.runModal()
     }
 }

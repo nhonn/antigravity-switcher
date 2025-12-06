@@ -5,33 +5,24 @@ class DBManager {
     static let shared = DBManager()
     
     // Keys to backup, matching Python version
-    private let keysToBackup = [
-        "antigravityAuthStatus",
-        "jetskiStateSync.agentManagerInitState"
-    ]
+    private let keysToBackup = AppConfiguration.shared.keysToBackup
     
     private init() {}
     
     // Get Antigravity DB Paths
     private func getDBPaths() -> [String] {
-        let fileManager = FileManager.default
-        let home = fileManager.homeDirectoryForCurrentUser
-        
-        // Standard path: ~/Library/Application Support/Antigravity/User/globalStorage/state.vscdb
-        let standardPath = home.appendingPathComponent("Library/Application Support/Antigravity/User/globalStorage/state.vscdb").path
-        
-        // Fallback path
-        let fallbackPath = home.appendingPathComponent("Library/Application Support/Antigravity/state.vscdb").path
-        
-        return [standardPath, fallbackPath]
+        return [
+            AppConfiguration.shared.standardDBPath,
+            AppConfiguration.shared.fallbackDBPath
+        ]
     }
     
     // Backup data from DB to dictionary
-    func backupData() -> [String: String]? {
+    func backupData() -> Result<[String: String], AppError> {
         let dbPaths = getDBPaths()
         guard let dbPath = dbPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
             print("❌ Database not found")
-            return nil
+            return .failure(.databaseNotFound(path: dbPaths.first ?? "Unknown"))
         }
         
         print("📂 Opening database: \(dbPath)")
@@ -39,7 +30,7 @@ class DBManager {
         var db: OpaquePointer?
         if sqlite3_open(dbPath, &db) != SQLITE_OK {
             print("❌ Error opening database")
-            return nil
+            return .failure(.databaseConnectionFailed)
         }
         defer { sqlite3_close(db) }
         
@@ -69,19 +60,23 @@ class DBManager {
             // Python version does simple check. We'll parse in AccountManager.
         }
         
-        return data
+        return .success(data)
     }
     
     // Restore data from dictionary to DB
-    func restoreData(_ data: [String: String]) -> Bool {
+    func restoreData(_ data: [String: String]) -> Result<Void, AppError> {
         let dbPaths = getDBPaths()
         var success = false
+        var lastError: AppError?
         
         for dbPath in dbPaths {
             // Check main DB
             if FileManager.default.fileExists(atPath: dbPath) {
-                if restoreSingleDB(path: dbPath, data: data) {
-                    success = true
+                switch restoreSingleDB(path: dbPath, data: data) {
+                case .success:
+                     success = true
+                case .failure(let error):
+                     lastError = error
                 }
             }
             
@@ -92,16 +87,20 @@ class DBManager {
             }
         }
         
-        return success
+        if success {
+            return .success(())
+        } else {
+            return .failure(lastError ?? .failedToRestoreDatabase)
+        }
     }
     
-    private func restoreSingleDB(path: String, data: [String: String]) -> Bool {
+    private func restoreSingleDB(path: String, data: [String: String]) -> Result<Void, AppError> {
         print("♻️ Restoring database: \(path)")
         
         var db: OpaquePointer?
         if sqlite3_open(path, &db) != SQLITE_OK {
             print("❌ Error opening database for restore")
-            return false
+            return .failure(.databaseConnectionFailed)
         }
         defer { sqlite3_close(db) }
         
@@ -123,18 +122,21 @@ class DBManager {
             }
         }
         
-        return true
+        return .success(())
     }
     
     // Get current account info (email)
     func getCurrentAccountEmail() -> String? {
         // Reuse backupData logic to fetch values
-        guard let data = backupData() else { return nil }
-        
-        // 1. Check antigravityAuthStatus
-        if let val = data["antigravityAuthStatus"],
-           let email = extractEmail(from: val) {
-            return email
+        switch backupData() {
+        case .success(let data):
+            // 1. Check antigravityAuthStatus
+            if let val = data["antigravityAuthStatus"],
+               let email = extractEmail(from: val) {
+                return email
+            }
+        case .failure:
+            return nil
         }
         
         return nil
