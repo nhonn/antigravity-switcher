@@ -46,10 +46,16 @@ PLIST
 # Create PkgInfo
 echo "APPL????" > "$CONTENTS_DIR/PkgInfo"
 
+
 # Copy Icon
 if [ -f "assets/icon.icns" ]; then
     cp "assets/icon.icns" "$RESOURCES_DIR/AppIcon.icns"
 fi
+
+echo "🔏 Signing App..."
+codesign --force --deep --sign - "$APP_BUNDLE_DIR"
+codesign --verify --verbose "$APP_BUNDLE_DIR"
+
 
 echo "🎉 Build Complete!"
 echo "📂 App location: $APP_BUNDLE_DIR"

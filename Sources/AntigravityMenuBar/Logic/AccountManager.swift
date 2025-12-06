@@ -121,7 +121,12 @@ class AccountManager: ObservableObject {
         print("🔄 Switching to \(account.name)...")
         
         // 1. Close App
-        // _ = ProcessManager.shared.closeApp()
+        if ProcessManager.shared.isRunning() {
+             let closed = ProcessManager.shared.closeApp()
+             if !closed {
+                 print("⚠️ Warn: Application might still be running")
+             }
+        }
         
         // 2. Read Backup
         let backupUrl = URL(fileURLWithPath: account.backup_file)
@@ -144,7 +149,7 @@ class AccountManager: ObservableObject {
             }
             
             // 4. Start App
-            // ProcessManager.shared.startApp()
+            ProcessManager.shared.startApp()
             
         case .failure(let error):
             throw error
