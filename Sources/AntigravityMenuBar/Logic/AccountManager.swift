@@ -21,11 +21,18 @@ class AccountManager: ObservableObject {
     static let shared = AccountManager()
     
     @Published var accounts: [Account] = []
+    @Published var currentEmail: String? = nil  // Currently active account email
     private var refreshTimer: Timer?
     
     private init() {
         loadAccounts()
+        updateCurrentEmail()
         startRefreshTimer()
+    }
+    
+    /// Update current email from database
+    func updateCurrentEmail() {
+        currentEmail = DBManager.shared.getCurrentAccountEmail()
     }
     
     private func startRefreshTimer() {
@@ -42,6 +49,7 @@ class AccountManager: ObservableObject {
     
     /// Call this when menu is about to open to refresh content
     func refreshMenuContent() {
+        updateCurrentEmail()  // Update active account status
         DispatchQueue.main.async {
             self.objectWillChange.send()
         }
