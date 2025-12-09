@@ -7,15 +7,83 @@ struct Account: Codable, Identifiable {
     let backup_file: String
     let created_at: String
     var last_used: String?
+    var time_limit: String?  // ISO8601 format for expiration date
+}
+
+/// Separate class for menu bar countdown to avoid triggering menu content refresh
+class MenuBarState: ObservableObject {
+    static let shared = MenuBarState()
+    @Published var countdown: String = ""
+    private init() {}
 }
 
 class AccountManager: ObservableObject {
     static let shared = AccountManager()
     
     @Published var accounts: [Account] = []
+    private var refreshTimer: Timer?
     
     private init() {
         loadAccounts()
+        startRefreshTimer()
+    }
+    
+    private func startRefreshTimer() {
+        // Create timer in common run loop mode so it runs even when menu is open
+        refreshTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateMenuBarCountdown()
+        }
+        // Add to common run loop mode for background updates
+        RunLoop.main.add(refreshTimer!, forMode: .common)
+        
+        // Initial update
+        updateMenuBarCountdown()
+    }
+    
+    /// Call this when menu is about to open to refresh content
+    func refreshMenuContent() {
+        DispatchQueue.main.async {
+            self.objectWillChange.send()
+        }
+    }
+    
+    private var menuRefreshCounter = 0
+    
+    private func updateMenuBarCountdown() {
+        // Find all accounts with active countdown
+        let activeAccounts = accounts.compactMap { account -> (Account, Date)? in
+            guard let timeLimitStr = account.time_limit,
+                  let timeLimit = ISO8601DateFormatter().date(from: timeLimitStr),
+                  timeLimit > Date() else {
+                return nil
+            }
+            return (account, timeLimit)
+        }
+        
+        // Get the one with shortest time remaining
+        guard let shortest = activeAccounts.min(by: { $0.1 < $1.1 }) else {
+            if !MenuBarState.shared.countdown.isEmpty {
+                DispatchQueue.main.async {
+                    MenuBarState.shared.countdown = ""
+                }
+            }
+            return
+        }
+        
+        // Format compact countdown for menu bar
+        let newText = TimeLimitFormatter.formatMenuBarCountdown(to: shortest.1)
+        if newText != MenuBarState.shared.countdown {
+            DispatchQueue.main.async {
+                MenuBarState.shared.countdown = newText
+            }
+        }
+        
+        // Refresh menu content every 5 seconds (compromise: less disruptive but keeps data fresh)
+        menuRefreshCounter += 1
+        if menuRefreshCounter >= 5 {
+            menuRefreshCounter = 0
+            refreshMenuContent()
+        }
     }
     
     private var appDataDir: URL {
@@ -174,5 +242,21 @@ class AccountManager: ObservableObject {
         saveAccounts()
         
         print("🗑️ Removed account: \(account.name)")
+    }
+    
+    func updateTimeLimit(id: String, date: Date?) {
+        guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        
+        if let date = date {
+            accounts[index].time_limit = date.ISO8601Format()
+            print("⏱ Set time limit for \(accounts[index].name): \(date)")
+        } else {
+            accounts[index].time_limit = nil
+            print("⏱ Cleared time limit for \(accounts[index].name)")
+        }
+        
+        saveAccounts()
     }
 }
