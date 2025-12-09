@@ -1,5 +1,19 @@
 import SwiftUI
 
+/// View for menu bar label with real-time countdown
+struct MenuBarLabelView: View {
+    @ObservedObject var menuBarState = MenuBarState.shared
+    
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "person.2.circle")
+            if !menuBarState.countdown.isEmpty {
+                Text(menuBarState.countdown)
+            }
+        }
+    }
+}
+
 @main
 struct AntigravityMenuBarApp: App {
     @StateObject private var accountManager = AccountManager.shared
@@ -7,7 +21,7 @@ struct AntigravityMenuBarApp: App {
     @State private var showErrorAlert = false
     
     var body: some Scene {
-        MenuBarExtra("Antigravity", systemImage: "person.2.circle") {
+        MenuBarExtra {
             // Header
             Text("Antigravity Switcher")
                 .font(.headline)
@@ -26,6 +40,17 @@ struct AntigravityMenuBarApp: App {
                             switchAccount(account)
                         }
                         
+                        // Show Reset if active countdown, otherwise Update Time Limit
+                        if hasActiveCountdown(account) {
+                            Button("Reset") {
+                                accountManager.updateTimeLimit(id: account.id, date: nil)
+                            }
+                        } else {
+                            Button("Update Time Limit") {
+                                showTimeLimitDialog(for: account)
+                            }
+                        }
+                        
                         Divider()
                         
                         Button("Remove Account") {
@@ -38,14 +63,8 @@ struct AntigravityMenuBarApp: App {
                             } else {
                                 Image(systemName: "person.fill")
                             }
-                            VStack(alignment: .leading) {
-                                Text(account.name)
-                                if let email = account.email {
-                                    Text(email)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
+                            // Build display name with countdown if applicable
+                            Text(accountDisplayName(account))
                         }
                     }
                 }
@@ -65,6 +84,8 @@ struct AntigravityMenuBarApp: App {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
+        } label: {
+            MenuBarLabelView()
         }
         .menuBarExtraStyle(.menu) // Dropdown menu style
         // Note: Alerts in MenuBarExtra are tricky. Standard SwiftUI .alert might not show up over a menu bar app easily.
@@ -98,6 +119,27 @@ struct AntigravityMenuBarApp: App {
         }
     }
     
+    private func accountDisplayName(_ account: Account) -> String {
+        var displayName = account.name
+        
+        // Append countdown if time_limit is set and not expired
+        if let timeLimitStr = account.time_limit,
+           let timeLimit = ISO8601DateFormatter().date(from: timeLimitStr),
+           let countdown = TimeLimitFormatter.formatCountdown(to: timeLimit) {
+            displayName += " \(countdown)"
+        }
+        
+        return displayName
+    }
+    
+    private func hasActiveCountdown(_ account: Account) -> Bool {
+        guard let timeLimitStr = account.time_limit,
+              let timeLimit = ISO8601DateFormatter().date(from: timeLimitStr) else {
+            return false
+        }
+        return timeLimit > Date()  // Active if not expired
+    }
+    
     private func removeAccount(_ account: Account) {
         do {
             try accountManager.removeAccount(id: account.id)
@@ -110,5 +152,80 @@ struct AntigravityMenuBarApp: App {
     private func showError(_ error: AppError) {
         let alert = NSAlert(error: error)
         alert.runModal()
+    }
+    
+    @MainActor
+    private func showTimeLimitDialog(for account: Account) {
+        let alert = NSAlert()
+        alert.messageText = "Update Time Limit"
+        alert.informativeText = "Enter time (HH:mm) and date (dd.MM.yyyy)\nLeave empty to clear time limit."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        
+        // Create stack view for inputs
+        let stackView = NSStackView(frame: NSRect(x: 0, y: 0, width: 260, height: 60))
+        stackView.orientation = .vertical
+        stackView.spacing = 8
+        
+        // Time input row
+        let timeRow = NSStackView()
+        timeRow.orientation = .horizontal
+        timeRow.spacing = 8
+        
+        let timeLabel = NSTextField(labelWithString: "Time:")
+        timeLabel.frame = NSRect(x: 0, y: 0, width: 50, height: 22)
+        
+        let timeField = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 22))
+        timeField.placeholderString = "HH:mm"
+        timeField.stringValue = TimeLimitFormatter.defaultTimeString()
+        
+        timeRow.addArrangedSubview(timeLabel)
+        timeRow.addArrangedSubview(timeField)
+        
+        // Date input row
+        let dateRow = NSStackView()
+        dateRow.orientation = .horizontal
+        dateRow.spacing = 8
+        
+        let dateLabel = NSTextField(labelWithString: "Date:")
+        dateLabel.frame = NSRect(x: 0, y: 0, width: 50, height: 22)
+        
+        let dateField = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
+        dateField.placeholderString = "dd.MM.yyyy"
+        dateField.stringValue = TimeLimitFormatter.defaultDateString()
+        
+        dateRow.addArrangedSubview(dateLabel)
+        dateRow.addArrangedSubview(dateField)
+        
+        stackView.addArrangedSubview(timeRow)
+        stackView.addArrangedSubview(dateRow)
+        
+        alert.accessoryView = stackView
+        
+        let response = alert.runModal()
+        
+        if response == .alertFirstButtonReturn {
+            let timeValue = timeField.stringValue.trimmingCharacters(in: .whitespaces)
+            let dateValue = dateField.stringValue.trimmingCharacters(in: .whitespaces)
+            
+            // Clear time limit if both empty
+            if timeValue.isEmpty && dateValue.isEmpty {
+                accountManager.updateTimeLimit(id: account.id, date: nil)
+                return
+            }
+            
+            // Validate and parse
+            guard let parsedDate = TimeLimitFormatter.parse(time: timeValue, date: dateValue) else {
+                let errorAlert = NSAlert()
+                errorAlert.messageText = "Invalid Format"
+                errorAlert.informativeText = "Please enter time as HH:mm (e.g., 14:30) and date as dd.MM.yyyy (e.g., 31.12.2026)"
+                errorAlert.alertStyle = .warning
+                errorAlert.runModal()
+                return
+            }
+            
+            accountManager.updateTimeLimit(id: account.id, date: parsedDate)
+        }
     }
 }
