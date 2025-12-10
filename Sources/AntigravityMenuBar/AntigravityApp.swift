@@ -58,11 +58,16 @@ struct AntigravityMenuBarApp: App {
                         }
                     } label: {
                         HStack {
-                            if account.email == "Unknown" {
-                                Image(systemName: "person.circle")
-                            } else {
-                                Image(systemName: "person.fill")
+                            // Show checkmark for active account
+                            if account.email == accountManager.currentEmail {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.green)
                             }
+                            // if account.email == "Unknown" {
+                            //     Image(systemName: "person.circle")
+                            // } else {
+                            //     Image(systemName: "person.fill")
+                            // }
                             // Build display name with countdown if applicable
                             Text(accountDisplayName(account))
                         }
