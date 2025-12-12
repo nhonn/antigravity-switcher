@@ -70,10 +70,14 @@ class AccountManager: ObservableObject {
         
         // Get the one with shortest time remaining
         guard let shortest = activeAccounts.min(by: { $0.1 < $1.1 }) else {
-            if !MenuBarState.shared.countdown.isEmpty {
+            // If we were showing a countdown and it just expired, also refresh the menu content
+            // so the per-account labels drop the countdown immediately.
+            let wasShowingCountdown = !MenuBarState.shared.countdown.isEmpty
+            if wasShowingCountdown {
                 DispatchQueue.main.async {
                     MenuBarState.shared.countdown = ""
                 }
+                refreshMenuContent()
             }
             return
         }
@@ -215,6 +219,12 @@ class AccountManager: ObservableObject {
         // 3. Restore DB
         switch DBManager.shared.restoreData(json) {
         case .success:
+            // Update active account email immediately so menu checkmark refreshes
+            let activeEmail = DBManager.shared.getCurrentAccountEmail()
+            await MainActor.run {
+                self.currentEmail = activeEmail
+            }
+
             // Update Last Used
             await MainActor.run {
                 if let idx = accounts.firstIndex(where: { $0.id == id }) {
