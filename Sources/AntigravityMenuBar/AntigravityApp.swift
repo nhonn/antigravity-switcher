@@ -39,6 +39,10 @@ struct AntigravityMenuBarApp: App {
                         Button("Switch to this account") {
                             switchAccount(account)
                         }
+
+                        Button("Switch: LIMIT") {
+                            switchAccountLimit(account)
+                        }
                         
                         // Show Reset if active countdown, otherwise Update Time Limit
                         if hasActiveCountdown(account) {
@@ -108,6 +112,18 @@ struct AntigravityMenuBarApp: App {
         Task {
             do {
                 try await accountManager.switchAccount(id: account.id)
+            } catch let error as AppError {
+                showError(error)
+            } catch {
+                print("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    private func switchAccountLimit(_ account: Account) {
+        Task {
+            do {
+                try await accountManager.switchAccountApplyingLimitToCurrent(id: account.id)
             } catch let error as AppError {
                 showError(error)
             } catch {

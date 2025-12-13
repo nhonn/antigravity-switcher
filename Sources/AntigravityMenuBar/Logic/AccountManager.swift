@@ -263,6 +263,27 @@ class AccountManager: ObservableObject {
             throw error
         }
     }
+
+    /// Switch to a selected backed-up account, but first apply a time limit to the
+    /// currently active account (the one active *before* switching).
+    ///
+    /// - Parameters:
+    ///   - id: Target account id to switch to.
+    ///   - limitDuration: Duration added to the current active account's time limit (default: 5 hours).
+    func switchAccountApplyingLimitToCurrent(id: String, limitDuration: TimeInterval = 5 * 60 * 60) async throws {
+        let activeEmail = DBManager.shared.getCurrentAccountEmail()
+
+        if let activeEmail {
+            await MainActor.run {
+                if let current = self.accounts.first(where: { $0.email == activeEmail }) {
+                    let newLimit = Date().addingTimeInterval(limitDuration)
+                    self.updateTimeLimit(id: current.id, date: newLimit)
+                }
+            }
+        }
+
+        try await switchAccount(id: id)
+    }
     
     func removeAccount(id: String) throws {
         guard let index = accounts.firstIndex(where: { $0.id == id }) else {
