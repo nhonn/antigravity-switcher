@@ -50,6 +50,10 @@ struct AntigravityMenuBarApp: App {
                                 showTimeLimitDialog(for: account)
                             }
                         }
+
+                        Button("Check Quota") {
+                            checkQuota(account)
+                        }
                         
                         Divider()
                         
@@ -152,11 +156,142 @@ struct AntigravityMenuBarApp: App {
             print("Error removing account: \(error)")
         }
     }
+
+    private func checkQuota(_ account: Account, forceRefresh: Bool = false) {
+        Task {
+            do {
+                if !forceRefresh, let cached = accountManager.cachedQuota(id: account.id) {
+                    await MainActor.run {
+                        showQuotaDialog(snapshot: cached, account: account, isCached: true)
+                    }
+                    return
+                }
+
+                let proceed = await MainActor.run {
+                    confirmQuotaCheck(for: account)
+                }
+                guard proceed else { return }
+
+                let panel = await MainActor.run { () -> ProgressPanel in
+                    let p = ProgressPanel(title: "Checking Quota", message: "Fetching quota data…")
+                    p.show()
+                    return p
+                }
+                defer {
+                    Task { @MainActor in
+                        panel.close()
+                    }
+                }
+
+                let snapshot = try await accountManager.checkQuota(id: account.id)
+
+                await MainActor.run {
+                    showQuotaDialog(snapshot: snapshot, account: account, isCached: false)
+                }
+            } catch let error as AppError {
+                await MainActor.run {
+                    showError(error)
+                }
+            } catch {
+                print("Unexpected error: \(error)")
+            }
+        }
+    }
     
     @MainActor
     private func showError(_ error: AppError) {
         let alert = NSAlert(error: error)
         alert.runModal()
+    }
+
+    @MainActor
+    private func showQuotaDialog(snapshot: QuotaSnapshot, account: Account, isCached: Bool) {
+        let alert = NSAlert()
+        alert.messageText = "Quota – \(account.name)"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Refresh")
+
+        let headerLines: [String] = [
+            snapshot.userEmail.map { "Email: \($0)" } ?? "Email: (unknown)",
+            snapshot.planName.map { "Plan: \($0)" } ?? "Plan: (unknown)",
+            snapshot.teamsTier.map { "Tier: \($0)" } ?? "Tier: (unknown)",
+            "Fetched at: \(snapshot.fetchedAt.formatted(date: .abbreviated, time: .standard))" + (isCached ? " (cached)" : "")
+        ]
+
+        var lines: [String] = headerLines
+
+        if let pc = snapshot.promptCredits {
+            lines.append("")
+            lines.append(String(format: "Prompt credits: %.0f / %.0f (%.1f%%)", pc.available, pc.monthly, pc.remainingPercentage))
+        }
+
+        let models = snapshot.models.sorted { (a, b) in
+            let ap = a.remainingPercentage ?? 101
+            let bp = b.remainingPercentage ?? 101
+            if ap == bp { return a.label < b.label }
+            return ap < bp
+        }
+
+        if !models.isEmpty {
+            lines.append("")
+            lines.append("Models:")
+
+            for m in models {
+                let pct = m.remainingPercentage.map { String(format: "%.1f%%", $0) } ?? "N/A"
+                let reset = m.resetTime.map { formatTimeUntil($0) } ?? "N/A"
+                let exhausted = m.isExhausted ? " (exhausted)" : ""
+                lines.append("- \(m.label): \(pct), resets in: \(reset)\(exhausted)")
+            }
+        } else {
+            lines.append("")
+            lines.append("No model quota data returned.")
+        }
+
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 520, height: 320))
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.string = lines.joined(separator: "\n")
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 320))
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+
+        alert.accessoryView = scrollView
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            checkQuota(account, forceRefresh: true)
+        }
+    }
+
+    @MainActor
+    private func confirmQuotaCheck(for account: Account) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Check Quota"
+
+        let active = account.email != nil && account.email == accountManager.currentEmail
+        if active {
+            alert.informativeText = "This will fetch quota for the currently active Antigravity account."
+        } else {
+            alert.informativeText = "This may temporarily switch Antigravity to this account and restart Antigravity to fetch quota. Continue?"
+        }
+
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func formatTimeUntil(_ date: Date) -> String {
+        let diff = date.timeIntervalSinceNow
+        if diff <= 0 { return "Ready" }
+        let mins = Int(ceil(diff / 60))
+        if mins < 60 { return "\(mins)m" }
+        let hours = mins / 60
+        let rem = mins % 60
+        return "\(hours)h \(rem)m"
     }
     
     @MainActor

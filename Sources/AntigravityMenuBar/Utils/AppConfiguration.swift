@@ -16,6 +16,7 @@ struct AppConfiguration {
     
     // MARK: - Bundle IDs
     let antigravityBundleIds = [
+        "com.ctrler.antigravity",
         "com.google.antigravity"
     ]
     let antigravityLinkScheme = "antigravity://oauth-success"
