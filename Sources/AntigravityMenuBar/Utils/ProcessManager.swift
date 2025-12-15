@@ -60,7 +60,64 @@ class ProcessManager {
         
         // Final verification
         Thread.sleep(forTimeInterval: 1.0)
+        // Antigravity sometimes leaves the language server running briefly.
+        // Best-effort cleanup to avoid stale account state.
+        terminateLanguageServers()
         return !isRunning()
+    }
+
+    /// Best-effort termination of Antigravity language server processes.
+    ///
+    /// When switching accounts, a leftover language server can keep the previous
+    /// session and cause quota checks to reflect the old account.
+    func terminateLanguageServers() {
+        do {
+            let ps = try Shell.run("/bin/ps", ["-ax", "-o", "pid=,command="], timeoutSeconds: 6)
+            let lines = ps.stdout.split(separator: "\n").map(String.init)
+
+            let candidates: [(pid: Int, cmd: String)] = lines.compactMap { line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { return nil }
+                let parts = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                guard parts.count == 2, let pid = Int(parts[0]) else { return nil }
+                let cmd = String(parts[1])
+                let lower = cmd.lowercased()
+
+                // Prefer the specific Antigravity extension language server.
+                if lower.contains("/extensions/antigravity/bin/language_server") ||
+                    lower.contains("language_server_macos") ||
+                    (lower.contains("language_server") && lower.contains("--csrf_token")) {
+                    return (pid: pid, cmd: cmd)
+                }
+                return nil
+            }
+
+            guard !candidates.isEmpty else { return }
+            print("🧹 Terminating language server(s): \(candidates.map { String($0.pid) }.joined(separator: ", "))")
+
+            for (pid, _) in candidates {
+                _ = try? Shell.run("/bin/kill", ["-TERM", String(pid)], timeoutSeconds: 2)
+            }
+
+            // Wait a bit for graceful shutdown, then force kill if needed.
+            for (pid, _) in candidates {
+                var alive = true
+                for _ in 0..<25 {
+                    if (try? Shell.run("/bin/kill", ["-0", String(pid)], timeoutSeconds: 1)) == nil {
+                        alive = false
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
+                if alive {
+                    print("⚠️ Language server \(pid) still running, forcing...")
+                    _ = try? Shell.run("/bin/kill", ["-KILL", String(pid)], timeoutSeconds: 2)
+                }
+            }
+        } catch {
+            // Best-effort only.
+            return
+        }
     }
     
     // Start Antigravity

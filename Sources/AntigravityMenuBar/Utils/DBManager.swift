@@ -104,19 +104,28 @@ class DBManager {
         }
         defer { sqlite3_close(db) }
         
-        for (key, value) in data {
-            // Only restore known keys
-            if keysToBackup.contains(key) {
+        // Restore allowlisted keys; for keys missing from the backup, clear them to avoid
+        // carrying over stale account state from the previously active account.
+        for key in keysToBackup {
+            if let value = data[key] {
                 let query = "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)"
                 var statement: OpaquePointer?
-                
+
                 if sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK {
                     sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
                     sqlite3_bind_text(statement, 2, (value as NSString).utf8String, -1, nil)
-                    
+
                     if sqlite3_step(statement) != SQLITE_DONE {
                         print("❌ Error writing key: \(key)")
                     }
+                }
+                sqlite3_finalize(statement)
+            } else {
+                let query = "DELETE FROM ItemTable WHERE key = ?"
+                var statement: OpaquePointer?
+                if sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK {
+                    sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
+                    _ = sqlite3_step(statement)
                 }
                 sqlite3_finalize(statement)
             }

@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:antigravity-switcher}",
+            "name": "Debug AntigravityMenuBar",
+            "target": "AntigravityMenuBar",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug AntigravityMenuBar"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:antigravity-switcher}",
+            "name": "Release AntigravityMenuBar",
+            "target": "AntigravityMenuBar",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release AntigravityMenuBar"
+        }
+    ]
+}

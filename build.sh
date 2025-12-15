@@ -9,6 +9,7 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 echo "🚀 Building Swift App..."
+rm -rf .build/
 swift build -c release --arch arm64
 
 echo "📦 Creating .app Bundle..."
@@ -35,6 +36,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <string>1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
