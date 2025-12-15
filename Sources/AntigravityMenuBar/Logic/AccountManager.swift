@@ -30,6 +30,13 @@ class AccountManager: ObservableObject {
         startRefreshTimer()
     }
     
+    private struct QuotaCacheEntry {
+        let snapshot: QuotaSnapshot
+        let fetchedAt: Date
+    }
+    private var quotaCache: [String: QuotaCacheEntry] = [:]
+    private let quotaCacheLock = NSLock()
+    
     /// Update current email from database
     func updateCurrentEmail() {
         currentEmail = DBManager.shared.getCurrentAccountEmail()
@@ -45,6 +52,21 @@ class AccountManager: ObservableObject {
         
         // Initial update
         updateMenuBarCountdown()
+    }
+    func cachedQuota(id: String, maxAgeSeconds: TimeInterval = 300) -> QuotaSnapshot? {
+        quotaCacheLock.lock()
+        defer { quotaCacheLock.unlock() }
+        guard let entry = quotaCache[id] else { return nil }
+        if Date().timeIntervalSince(entry.fetchedAt) > maxAgeSeconds {
+            return nil
+        }
+        return entry.snapshot
+    }
+    
+    private func setCachedQuota(id: String, snapshot: QuotaSnapshot) {
+        quotaCacheLock.lock()
+        quotaCache[id] = QuotaCacheEntry(snapshot: snapshot, fetchedAt: Date())
+        quotaCacheLock.unlock()
     }
     
     /// Call this when menu is about to open to refresh content
@@ -206,6 +228,8 @@ class AccountManager: ObservableObject {
              if !closed {
                  print("⚠️ Warn: Application might still be running")
              }
+               // Ensure we don't reuse a stale language server between accounts.
+               ProcessManager.shared.terminateLanguageServers()
         }
         
         // 2. Read Backup
@@ -240,6 +264,27 @@ class AccountManager: ObservableObject {
         case .failure(let error):
             throw error
         }
+    }
+
+    /// Switch to a selected backed-up account, but first apply a time limit to the
+    /// currently active account (the one active *before* switching).
+    ///
+    /// - Parameters:
+    ///   - id: Target account id to switch to.
+    ///   - limitDuration: Duration added to the current active account's time limit (default: 5 hours).
+    func switchAccountApplyingLimitToCurrent(id: String, limitDuration: TimeInterval = 5 * 60 * 60) async throws {
+        let activeEmail = DBManager.shared.getCurrentAccountEmail()
+
+        if let activeEmail {
+            await MainActor.run {
+                if let current = self.accounts.first(where: { $0.email == activeEmail }) {
+                    let newLimit = Date().addingTimeInterval(limitDuration)
+                    self.updateTimeLimit(id: current.id, date: newLimit)
+                }
+            }
+        }
+
+        try await switchAccount(id: id)
     }
     
     func removeAccount(id: String) throws {
@@ -276,5 +321,136 @@ class AccountManager: ObservableObject {
         }
         
         saveAccounts()
+    }
+
+    // MARK: - Quota
+
+    /// Fetch Antigravity quota for a specific backed-up account.
+    ///
+    /// Implementation note: Antigravity quota is retrieved from the local language_server HTTPS endpoint.
+    /// That endpoint reflects the currently active Antigravity account, so we temporarily restore the
+    /// selected account into the DB, start Antigravity, fetch quota, then restore the original DB state.
+    func checkQuota(id: String) async throws -> QuotaSnapshot {
+        guard let target = accounts.first(where: { $0.id == id }) else {
+            throw AppError.accountNotFound
+        }
+
+        // Fast path: if this account is currently active, avoid DB swapping.
+        if let targetEmail = target.email,
+           let activeEmail = currentEmail,
+           targetEmail == activeEmail {
+            let wasRunning = ProcessManager.shared.isRunning()
+            do {
+                if !wasRunning {
+                    ProcessManager.shared.startApp()
+                    let started = await waitForAntigravityRunning(timeoutSeconds: 12)
+                    if !started {
+                        throw AppError.languageServerNotFound
+                    }
+                }
+
+                let snapshot = try await QuotaService.shared.fetchQuota()
+                setCachedQuota(id: id, snapshot: snapshot)
+
+                if !wasRunning {
+                    _ = ProcessManager.shared.closeApp()
+                }
+
+                return snapshot
+            } catch {
+                if !wasRunning {
+                    _ = ProcessManager.shared.closeApp()
+                }
+                throw error
+            }
+        }
+
+        // Snapshot current DB so we can restore even if the current account isn't in our backups.
+        let originalDB: [String: String]
+        switch DBManager.shared.backupData() {
+        case .success(let data):
+            originalDB = data
+        case .failure(let error):
+            throw error
+        }
+
+        let wasRunning = ProcessManager.shared.isRunning()
+
+        // Always try to leave the system in the original state.
+        do {
+            if wasRunning {
+                _ = ProcessManager.shared.closeApp()
+                ProcessManager.shared.terminateLanguageServers()
+            }
+
+            let targetBackup = try readBackupData(for: target)
+            switch DBManager.shared.restoreData(targetBackup) {
+            case .success:
+                break
+            case .failure(let error):
+                throw error
+            }
+
+            ProcessManager.shared.startApp()
+            let started = await waitForAntigravityRunning(timeoutSeconds: 12)
+            if !started {
+                throw AppError.languageServerNotFound
+            }
+
+            let snapshot = try await QuotaService.shared.fetchQuota()
+            setCachedQuota(id: id, snapshot: snapshot)
+
+            // Close Antigravity to avoid leaving the account active.
+            _ = ProcessManager.shared.closeApp()
+            ProcessManager.shared.terminateLanguageServers()
+
+            // Restore original DB state.
+            switch DBManager.shared.restoreData(originalDB) {
+            case .success:
+                break
+            case .failure(let error):
+                throw error
+            }
+
+            // Restore original running state.
+            if wasRunning {
+                ProcessManager.shared.startApp()
+            }
+
+            await MainActor.run {
+                self.updateCurrentEmail()
+                self.refreshMenuContent()
+            }
+
+            return snapshot
+        } catch {
+            // Best-effort rollback
+            _ = ProcessManager.shared.closeApp()
+            _ = DBManager.shared.restoreData(originalDB)
+            if wasRunning {
+                ProcessManager.shared.startApp()
+            }
+            throw error
+        }
+    }
+
+    private func readBackupData(for account: Account) throws -> [String: String] {
+        let backupUrl = URL(fileURLWithPath: account.backup_file)
+        let data = try Data(contentsOf: backupUrl)
+        guard let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: String] else {
+            throw AppError.failedToReadBackup(path: backupUrl.path)
+        }
+        return json
+    }
+
+    private func waitForAntigravityRunning(timeoutSeconds: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if ProcessManager.shared.isRunning() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        return false
     }
 }

@@ -9,6 +9,7 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 echo "🚀 Building Swift App..."
+rm -rf .build/
 swift build -c release --arch arm64
 
 echo "📦 Creating .app Bundle..."
