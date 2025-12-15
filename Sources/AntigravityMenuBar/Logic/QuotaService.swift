@@ -103,27 +103,22 @@ final class QuotaService {
         // 1) Find candidate processes by scanning the full process list.
         // Rationale: relying on a fixed process name (e.g. "language_server") is brittle across versions.
         // We instead look for processes that expose the required CSRF token flag and then probe ports.
-        let ps = try Shell.run("/bin/ps", ["-ax", "-o", "pid=,command="], timeoutSeconds: 6)
-        let lines = ps.stdout
-            .split(separator: "\n")
-            .map { String($0) }
+        let psLines = try loadProcessLines(timeoutSeconds: 6)
 
         struct Candidate {
             let pid: Int
             let cmd: String
             let score: Int
+            let elapsedSeconds: Int
         }
 
         var candidates: [Candidate] = []
         candidates.reserveCapacity(8)
 
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { continue }
-
-            let parts = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-            guard parts.count == 2, let pid = Int(parts[0]) else { continue }
-            let cmd = String(parts[1])
+        for row in psLines {
+            let pid = row.pid
+            let cmd = row.cmd
+            let etimes = row.elapsedSeconds
 
             // Must have CSRF token so we can authenticate requests.
             guard cmd.contains("--csrf_token") else { continue }
@@ -135,10 +130,13 @@ final class QuotaService {
             if lower.contains("antigravity") { score += 5 }
             if lower.contains("codeium") { score += 3 }
 
-            candidates.append(.init(pid: pid, cmd: cmd, score: score))
+            candidates.append(.init(pid: pid, cmd: cmd, score: score, elapsedSeconds: etimes))
         }
 
-        candidates.sort { $0.score > $1.score }
+        candidates.sort {
+            if $0.score != $1.score { return $0.score > $1.score }
+            return $0.elapsedSeconds < $1.elapsedSeconds
+        }
         if candidates.isEmpty {
             throw AppError.languageServerNotFound
         }
@@ -174,6 +172,84 @@ final class QuotaService {
 
         // We found CSRF-token processes, but none served the expected endpoints.
         throw AppError.languageServerPortNotFound
+    }
+
+    private struct ProcessLine {
+        let pid: Int
+        let elapsedSeconds: Int
+        let cmd: String
+    }
+
+    private func loadProcessLines(timeoutSeconds: TimeInterval) throws -> [ProcessLine] {
+        // Prefer an elapsed-seconds column when available, but macOS BSD ps doesn't support "etimes".
+        // It does support "etime" (elapsed time formatted), which we can parse.
+        do {
+            let ps = try Shell.run("/bin/ps", ["-ax", "-o", "pid=,etimes=,command="], timeoutSeconds: timeoutSeconds)
+            return parsePsEtimesOutput(ps.stdout)
+        } catch let ShellError.nonZeroExit(_, _, stderr) {
+            if stderr.lowercased().contains("keyword not found") {
+                let ps = try Shell.run("/bin/ps", ["-ax", "-o", "pid=,etime=,command="], timeoutSeconds: timeoutSeconds)
+                return parsePsEtimeOutput(ps.stdout)
+            }
+            throw AppError.commandFailed(message: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    private func parsePsEtimesOutput(_ stdout: String) -> [ProcessLine] {
+        // Format: "PID ETIMES COMMAND"
+        stdout
+            .split(separator: "\n")
+            .compactMap { raw in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { return nil }
+                let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+                guard parts.count == 3, let pid = Int(parts[0]), let etimes = Int(parts[1]) else { return nil }
+                return ProcessLine(pid: pid, elapsedSeconds: etimes, cmd: String(parts[2]))
+            }
+    }
+
+    private func parsePsEtimeOutput(_ stdout: String) -> [ProcessLine] {
+        // Format: "PID ETIME COMMAND", where ETIME is [[dd-]hh:]mm:ss
+        stdout
+            .split(separator: "\n")
+            .compactMap { raw in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { return nil }
+                let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+                guard parts.count == 3, let pid = Int(parts[0]) else { return nil }
+                let etime = String(parts[1])
+                guard let seconds = parseEtimeToSeconds(etime) else { return nil }
+                return ProcessLine(pid: pid, elapsedSeconds: seconds, cmd: String(parts[2]))
+            }
+    }
+
+    private func parseEtimeToSeconds(_ etime: String) -> Int? {
+        // [[dd-]hh:]mm:ss
+        let pieces = etime.split(separator: "-")
+        var days = 0
+        var timePart = etime
+        if pieces.count == 2 {
+            days = Int(pieces[0]) ?? 0
+            timePart = String(pieces[1])
+        }
+
+        let fields = timePart.split(separator: ":").map(String.init)
+        guard fields.count == 2 || fields.count == 3 else { return nil }
+
+        var hours = 0
+        var minutes = 0
+        var seconds = 0
+
+        if fields.count == 2 {
+            minutes = Int(fields[0]) ?? 0
+            seconds = Int(fields[1]) ?? 0
+        } else {
+            hours = Int(fields[0]) ?? 0
+            minutes = Int(fields[1]) ?? 0
+            seconds = Int(fields[2]) ?? 0
+        }
+
+        return days * 86_400 + hours * 3_600 + minutes * 60 + seconds
     }
 
     private static func parseListeningPorts(from lsofOutput: String) -> [Int] {

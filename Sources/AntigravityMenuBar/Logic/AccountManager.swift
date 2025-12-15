@@ -228,6 +228,8 @@ class AccountManager: ObservableObject {
              if !closed {
                  print("⚠️ Warn: Application might still be running")
              }
+               // Ensure we don't reuse a stale language server between accounts.
+               ProcessManager.shared.terminateLanguageServers()
         }
         
         // 2. Read Backup
@@ -378,6 +380,7 @@ class AccountManager: ObservableObject {
         do {
             if wasRunning {
                 _ = ProcessManager.shared.closeApp()
+                ProcessManager.shared.terminateLanguageServers()
             }
 
             let targetBackup = try readBackupData(for: target)
@@ -399,6 +402,7 @@ class AccountManager: ObservableObject {
 
             // Close Antigravity to avoid leaving the account active.
             _ = ProcessManager.shared.closeApp()
+            ProcessManager.shared.terminateLanguageServers()
 
             // Restore original DB state.
             switch DBManager.shared.restoreData(originalDB) {
