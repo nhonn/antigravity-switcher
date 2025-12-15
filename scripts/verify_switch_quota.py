@@ -17,6 +17,13 @@ ACCOUNTS_PATH = os.path.expanduser("~/.antigravity-agent/antigravity_accounts.js
 KEYS_TO_SWAP = [
     "antigravityAuthStatus",
     "jetskiStateSync.agentManagerInitState",
+    "antigravityUserSettings.allUserSettings",
+    "antigravity_allowed_command_model_configs",
+    "antigravityOnboarding",
+    "antigravity.profileUrl",
+    "antigravityChangelog/lastVersion",
+    "antigravityAnalytics.lastUploadTime",
+    "antigravity.agentViewContainerId.state.hidden",
 ]
 
 
@@ -107,19 +114,14 @@ def parse_token_and_ports(ps_line: str) -> Tuple[int, str, List[int]]:
         raise RuntimeError("Could not parse --csrf_token")
     token = m2.group(1)
 
-    lsof = subprocess.check_output(
-        [
-            "/usr/sbin/lsof",
-            "-a",
-            "-p",
-            str(pid),
-            "-iTCP",
-            "-sTCP:LISTEN",
-            "-n",
-            "-P",
-        ],
-        text=True,
-    )
+    try:
+        lsof = subprocess.check_output(
+            ["/usr/sbin/lsof", "-a", "-p", str(pid), "-iTCP", "-sTCP:LISTEN", "-n", "-P"],
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        # lsof exits 1 when no matches (e.g., server not listening yet).
+        lsof = ""
     ports = sorted({int(x) for x in re.findall(r"TCP\s+[^:]+:(\d+)\s+\(LISTEN\)", lsof)})
     return pid, token, ports
 

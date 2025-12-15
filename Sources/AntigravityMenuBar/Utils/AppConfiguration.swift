@@ -11,7 +11,15 @@ struct AppConfiguration {
     // MARK: - Data Keys
     let keysToBackup = [
         "antigravityAuthStatus",
-        "jetskiStateSync.agentManagerInitState"
+        "jetskiStateSync.agentManagerInitState",
+        // Additional Antigravity state that can be account-specific and may affect quota/session behavior
+        "antigravityUserSettings.allUserSettings",
+        "antigravity_allowed_command_model_configs",
+        "antigravityOnboarding",
+        "antigravity.profileUrl",
+        "antigravityChangelog/lastVersion",
+        "antigravityAnalytics.lastUploadTime",
+        "antigravity.agentViewContainerId.state.hidden"
     ]
     
     // MARK: - Bundle IDs
