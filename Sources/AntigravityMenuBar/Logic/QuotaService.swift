@@ -51,6 +51,7 @@ final class QuotaService {
     func fetchQuota() async throws -> QuotaSnapshot {
         let server = try await detectLanguageServer()
         let response: ServerUserStatusResponse = try await request(
+            scheme: server.scheme,
             port: server.connectPort,
             csrfToken: server.csrfToken,
             path: "/exa.language_server_pb.LanguageServerService/GetUserStatus",
@@ -72,61 +73,106 @@ final class QuotaService {
         let pid: Int
         let csrfToken: String
         let connectPort: Int
+        let scheme: String
     }
 
-    private func detectLanguageServer(maxWaitSeconds: TimeInterval = 10) async throws -> ServerInfo {
+    private func detectLanguageServer(maxWaitSeconds: TimeInterval = 15) async throws -> ServerInfo {
         let deadline = Date().addingTimeInterval(maxWaitSeconds)
 
+        var lastError: Error?
+
         while Date() < deadline {
-            if let info = try? await detectLanguageServerOnce() {
-                return info
+            do {
+                return try await detectLanguageServerOnce()
+            } catch {
+                lastError = error
             }
             try await Task.sleep(nanoseconds: 400_000_000) // 0.4s
         }
 
+        if let appError = lastError as? AppError {
+            throw appError
+        }
+        if let lastError {
+            throw AppError.commandFailed(message: lastError.localizedDescription)
+        }
         throw AppError.languageServerNotFound
     }
 
     private func detectLanguageServerOnce() async throws -> ServerInfo {
-        // 1) Find language_server PID + csrf token from command line
-        // pgrep -fl => "PID full_command_line"
-        let pgrep = try Shell.run("/usr/bin/pgrep", ["-fl", "language_server"], timeoutSeconds: 2)
-        let lines = pgrep.stdout
+        // 1) Find candidate processes by scanning the full process list.
+        // Rationale: relying on a fixed process name (e.g. "language_server") is brittle across versions.
+        // We instead look for processes that expose the required CSRF token flag and then probe ports.
+        let ps = try Shell.run("/bin/ps", ["-ax", "-o", "pid=,command="], timeoutSeconds: 6)
+        let lines = ps.stdout
             .split(separator: "\n")
             .map { String($0) }
 
-        let candidate = lines.first { line in
-            line.contains("--csrf_token") && line.contains("--extension_server_port")
+        struct Candidate {
+            let pid: Int
+            let cmd: String
+            let score: Int
         }
 
-        guard let candidate else {
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(8)
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+
+            let parts = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            guard parts.count == 2, let pid = Int(parts[0]) else { continue }
+            let cmd = String(parts[1])
+
+            // Must have CSRF token so we can authenticate requests.
+            guard cmd.contains("--csrf_token") else { continue }
+
+            var score = 0
+            let lower = cmd.lowercased()
+            if lower.contains("language_server") { score += 10 }
+            if lower.contains("exa.") { score += 6 }
+            if lower.contains("antigravity") { score += 5 }
+            if lower.contains("codeium") { score += 3 }
+
+            candidates.append(.init(pid: pid, cmd: cmd, score: score))
+        }
+
+        candidates.sort { $0.score > $1.score }
+        if candidates.isEmpty {
             throw AppError.languageServerNotFound
         }
 
-        let parts = candidate.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-        guard parts.count >= 2, let pid = Int(parts[0]) else {
-            throw AppError.languageServerNotFound
-        }
-        let cmd = String(parts[1])
+        // 2) For each candidate PID, extract CSRF token and probe listening ports.
+        for candidate in candidates {
+            guard let csrfToken = Regex.firstMatch(
+                in: candidate.cmd,
+                pattern: "--csrf_token(?:=|\\s+)([A-Za-z0-9\\-]+)"
+            ) else {
+                continue
+            }
 
-        guard let csrfToken = Regex.firstMatch(in: cmd, pattern: "--csrf_token[=\\s]+([A-Za-z0-9\\-]+)") else {
-            throw AppError.languageServerNotFound
-        }
+            // NOTE: lsof selection terms are OR'd by default; we must add -a to AND them,
+            // otherwise we'll collect listening ports from unrelated processes.
+            let lsof = try Shell.run(
+                "/usr/sbin/lsof",
+                ["-a", "-p", String(candidate.pid), "-iTCP", "-sTCP:LISTEN", "-n", "-P"],
+                timeoutSeconds: 2
+            )
+            let ports = Self.parseListeningPorts(from: lsof.stdout)
+            if ports.isEmpty {
+                continue
+            }
 
-        // 2) List listening ports for PID
-        let lsof = try Shell.run("/usr/sbin/lsof", ["-iTCP", "-sTCP:LISTEN", "-n", "-P", "-p", String(pid)], timeoutSeconds: 2)
-        let ports = Self.parseListeningPorts(from: lsof.stdout)
-        if ports.isEmpty {
-            throw AppError.languageServerPortNotFound
-        }
-
-        // 3) Find the port that actually speaks the Connect protocol endpoints
-        for port in ports {
-            if (try? await testPort(port: port, csrfToken: csrfToken)) == true {
-                return ServerInfo(pid: pid, csrfToken: csrfToken, connectPort: port)
+            // 3) Find the port that actually speaks the Connect protocol endpoints.
+            for port in ports {
+                if let scheme = (try? await detectScheme(port: port, csrfToken: csrfToken)) {
+                    return ServerInfo(pid: candidate.pid, csrfToken: csrfToken, connectPort: port, scheme: scheme)
+                }
             }
         }
 
+        // We found CSRF-token processes, but none served the expected endpoints.
         throw AppError.languageServerPortNotFound
     }
 
@@ -150,20 +196,25 @@ final class QuotaService {
         return result.sorted()
     }
 
-    private func testPort(port: Int, csrfToken: String) async throws -> Bool {
-        let statusCode = try await requestRawStatusCode(
-            port: port,
-            csrfToken: csrfToken,
-            path: "/exa.language_server_pb.LanguageServerService/GetUnleashData",
-            body: ["wrapper_data": [:]]
-        )
-        return statusCode == 200
+    private func detectScheme(port: Int, csrfToken: String) async throws -> String? {
+        // Some versions expose the Connect endpoints over HTTPS, others over plain HTTP.
+        // Probe HTTPS first (preferred), then fall back to HTTP.
+        let path = "/exa.language_server_pb.LanguageServerService/GetUnleashData"
+        let body: [String: Any] = ["wrapper_data": [:]]
+
+        if (try? await requestRawStatusCode(scheme: "https", port: port, csrfToken: csrfToken, path: path, body: body)) == 200 {
+            return "https"
+        }
+        if (try? await requestRawStatusCode(scheme: "http", port: port, csrfToken: csrfToken, path: path, body: body)) == 200 {
+            return "http"
+        }
+        return nil
     }
 
     // MARK: - HTTP
 
-    private func request<T: Decodable>(port: Int, csrfToken: String, path: String, body: [String: Any]) async throws -> T {
-        let url = URL(string: "https://127.0.0.1:\(port)\(path)")!
+    private func request<T: Decodable>(scheme: String, port: Int, csrfToken: String, path: String, body: [String: Any]) async throws -> T {
+        let url = URL(string: "\(scheme)://127.0.0.1:\(port)\(path)")!
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -190,8 +241,8 @@ final class QuotaService {
         }
     }
 
-    private func requestRawStatusCode(port: Int, csrfToken: String, path: String, body: [String: Any]) async throws -> Int {
-        let url = URL(string: "https://127.0.0.1:\(port)\(path)")!
+    private func requestRawStatusCode(scheme: String, port: Int, csrfToken: String, path: String, body: [String: Any]) async throws -> Int {
+        let url = URL(string: "\(scheme)://127.0.0.1:\(port)\(path)")!
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
