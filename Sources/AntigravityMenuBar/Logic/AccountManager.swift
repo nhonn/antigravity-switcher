@@ -120,6 +120,12 @@ class AccountManager: ObservableObject {
         
         print("🔄 Switching to \(account.name)...")
         
+        // 0. Auto-backup current account if enabled
+        if AppConfiguration.shared.autoBackupBeforeSwitch {
+            print("📦 Auto-backing up current account...")
+            _ = try await addCurrentAccount()
+        }
+        
         // 1. Close App
         if ProcessManager.shared.isRunning() {
              let closed = ProcessManager.shared.closeApp()
@@ -174,5 +180,17 @@ class AccountManager: ObservableObject {
         saveAccounts()
         
         print("🗑️ Removed account: \(account.name)")
+    }
+    
+    func renameAccount(id: String, newName: String) {
+        guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        
+        let oldName = accounts[index].name
+        accounts[index].name = newName
+        saveAccounts()
+        
+        print("✏️ Renamed account: \(oldName) → \(newName)")
     }
 }

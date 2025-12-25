@@ -1,7 +1,7 @@
 import Foundation
 
-struct AppConfiguration {
-    static let shared = AppConfiguration()
+final class AppConfiguration {
+    static var shared = AppConfiguration()
     
     // MARK: - Paths
     let appDataDirectoryName = ".antigravity-agent"
@@ -31,6 +31,29 @@ struct AppConfiguration {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Antigravity/state.vscdb")
             .path
+    }
+    
+    // MARK: - UserDefaults Keys
+    private enum UserDefaultsKeys {
+        static let autoBackupBeforeSwitch = "autoBackupBeforeSwitch"
+        static let launchAtLogin = "launchAtLogin"
+        static let showNotifications = "showNotifications"
+    }
+    
+    // MARK: - Settings
+    var autoBackupBeforeSwitch: Bool {
+        get { UserDefaults.standard.bool(forKey: UserDefaultsKeys.autoBackupBeforeSwitch) }
+        set { UserDefaults.standard.set(newValue, forKey: UserDefaultsKeys.autoBackupBeforeSwitch) }
+    }
+    
+    var launchAtLogin: Bool {
+        get { UserDefaults.standard.bool(forKey: UserDefaultsKeys.launchAtLogin) }
+        set { UserDefaults.standard.set(newValue, forKey: UserDefaultsKeys.launchAtLogin) }
+    }
+    
+    var showNotifications: Bool {
+        get { UserDefaults.standard.object(forKey: UserDefaultsKeys.showNotifications) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: UserDefaultsKeys.showNotifications) }
     }
     
     private init() {}

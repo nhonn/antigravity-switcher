@@ -20,16 +20,26 @@ struct AntigravityMenuBarApp: App {
                 Text("No backups found")
                     .foregroundColor(.gray)
             } else {
-                ForEach(accountManager.accounts) { account in
+                ForEach(Array(accountManager.accounts.enumerated()), id: \.element.id) { index, account in
                     Menu {
                         Button("Switch to this account") {
                             switchAccount(account)
                         }
+                        // Only add keyboard shortcuts for first 9 accounts
+                        if index < 9 {
+                            Button("") {}
+                                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                                .hidden()
+                        }
+                        
+                        Button("Rename...") {
+                            renameAccount(account)
+                        }
                         
                         Divider()
                         
-                        Button("Remove Account") {
-                            removeAccount(account)
+                        Button("Remove Account", role: .destructive) {
+                            confirmRemoveAccount(account)
                         }
                     } label: {
                         HStack {
@@ -61,17 +71,29 @@ struct AntigravityMenuBarApp: App {
             
             Divider()
             
+            if #available(macOS 14.0, *) {
+                SettingsLink {
+                    Text("Preferences...")
+                }
+                .keyboardShortcut(",")
+            } else {
+                Button("Preferences...") {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                }
+                .keyboardShortcut(",")
+            }
+            
             Button("Quit") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
         }
-        .menuBarExtraStyle(.menu) // Dropdown menu style
-        // Note: Alerts in MenuBarExtra are tricky. Standard SwiftUI .alert might not show up over a menu bar app easily.
-        // We often need a workaround or a window. For simplicity in this native macOS app improvement, we can try using a basic NSAlert from logic or use a window if needed.
-        // However, since SwiftUI's MenuBarExtra in .menu style actually renders NSMenuItems, standard SwiftUI alerts won't work inside the menu construction block directly in the same way.
-        // But for the sake of improved architecture, we will handle the error in the Task. 
-        // Showing a real UI alert from a menu bar app often requires bringing the app to front or using NSAlert.
+        .menuBarExtraStyle(.menu)
+        
+        // Settings Window
+        Settings {
+            SettingsView()
+        }
     }
     
     private func switchAccount(_ account: Account) {
@@ -98,11 +120,51 @@ struct AntigravityMenuBarApp: App {
         }
     }
     
-    private func removeAccount(_ account: Account) {
-        do {
-            try accountManager.removeAccount(id: account.id)
-        } catch {
-            print("Error removing account: \(error)")
+    private func renameAccount(_ account: Account) {
+        let alert = NSAlert()
+        alert.messageText = "Rename Account"
+        alert.informativeText = "Enter a new name for this account:"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
+        textField.stringValue = account.name
+        textField.placeholderString = "Account name"
+        alert.accessoryView = textField
+        
+        // Make the text field the first responder
+        alert.window.initialFirstResponder = textField
+        
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            let newName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !newName.isEmpty && newName != account.name {
+                accountManager.renameAccount(id: account.id, newName: newName)
+            }
+        }
+    }
+    
+    private func confirmRemoveAccount(_ account: Account) {
+        let alert = NSAlert()
+        alert.messageText = "Remove Account Backup?"
+        alert.informativeText = "Are you sure you want to remove the backup for \"\(account.name)\"? This action cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        
+        // Make the Remove button destructive (red on macOS Ventura+)
+        if let removeButton = alert.buttons.first {
+            removeButton.hasDestructiveAction = true
+        }
+        
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            do {
+                try accountManager.removeAccount(id: account.id)
+            } catch {
+                print("Error removing account: \(error)")
+            }
         }
     }
     
